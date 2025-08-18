@@ -18,3 +18,11 @@ pub trait OracleTrait<W: QueryInputTrait + ?Sized> {
 pub trait AutomatonTrait<I> {
     fn accepts(&self, word: &[I]) -> bool;
 }
+
+impl QueryInputTrait for String {
+    type Symbol = ();
+
+    fn append_symbol(&self, symbol: &Self::Symbol) -> Self {
+        todo!()
+    }
+}
