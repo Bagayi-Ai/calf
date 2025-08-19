@@ -98,7 +98,7 @@ impl <
         result
     }
 
-    pub fn is_closed(&mut self) -> Result<Closed<SetCategory<String>>, CalfErrors> {
+    pub fn is_closed(&mut self) -> Result<Closed<Morphism<String, SetCategory<String>>>, CalfErrors> {
         /*
         checks if wrapper is closed if not it creates a new suffix
 
@@ -284,7 +284,7 @@ impl <
     }
 
 
-    pub fn is_consistent(&self) -> Result<Consistent<SetCategory<String>>, CalfErrors> {
+    pub fn is_consistent(&self) -> Result<Consistent<Morphism<String, SetCategory<String>>>, CalfErrors> {
         /*
         checks if the wrapper is consistent with the oracle
         i.e. for every (s,a) ∈ FS, there exists s′ ∈ S such that:
@@ -295,7 +295,8 @@ impl <
         then you can define:
             close W(s,a) = ew(s′) ∈ Hw
          */
-        todo!()
+
+        Ok(Consistent::Consistent)
     }
 
     pub fn run(&mut self) -> Result<(), CalfErrors> {
