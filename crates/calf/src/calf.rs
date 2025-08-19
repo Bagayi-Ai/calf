@@ -130,33 +130,33 @@ impl <
         let monic_morphism = morphism_factors.1.clone();
 
         // now we need to check if there is a morphism from FS to H
-        let fs_to_h_homset = self.category.get_hom_set(&*self.prefix_alphabet,
+        let flatten_prefix_alphabet_to_h_homset = self.category.get_hom_set(&*self.flatten_prefix_alphabet,
                                                       epic_morphism.target_object())?;
 
         // there should be not more than one morphism from FS to H
-        if fs_to_h_homset.len() > 1 {
+        if flatten_prefix_alphabet_to_h_homset.len() > 1 {
             return Err(CalfErrors::MultipleMorphismsFromFSToH);
         }
 
-        let fs_to_h = if fs_to_h_homset.is_empty() {
+        let flatten_prefix_alphabet_to_h = if flatten_prefix_alphabet_to_h_homset.is_empty() {
             // if there is no morphism, then we need to create one
             // create a new morphism from FS to H
 
             // since from H to powerset is monic
             // our mapping will map each obect in FS to object in H such that H maps to powerset
-            let mut fs_to_h_mapping = HashMap::new();
+            let mut flatten_prefix_alphabet_to_h_mapping = HashMap::new();
 
             let monic_powerset_reverse_mapping: HashMap<_,_> = monic_morphism.functor()?.arrow_mappings().iter()
-                .map(|(source, target)| (*target, *source)).collect();
+                .map(|(source, target)| (target.clone(), source.clone())).collect();
             for (source_morphism, target_morphism) in flattened_prefix_alphabet_to_power_set.functor()?.arrow_mappings() {
                 // map each source morphism to a morphism in H
                 // get morphism in monic morphism that maps to the target morphism
                 if let Some(h_source_morphism) = monic_powerset_reverse_mapping.get(target_morphism) {
-                    fs_to_h_mapping.insert((**source_morphism).clone(), (**h_source_morphism).clone());
+                    flatten_prefix_alphabet_to_h_mapping.insert(source_morphism.clone(), h_source_morphism.clone());
                 }
                 else{
                     // if there is no matching morphism in H, then its not closed
-                    return Ok(Closed::NotClosed(HashSet::from_iter([(***source_morphism).clone()])));
+                    return Ok(Closed::NotClosed(HashSet::from_iter([(**source_morphism).clone()])));
                 }
 
             }
@@ -169,18 +169,18 @@ impl <
                     Uuid::new_v4().to_string(),
                     self.prefix_alphabet.clone(),
                     epic_morphism.target_object().clone(),
-                    fs_to_h_mapping,
+                    flatten_prefix_alphabet_to_h_mapping,
                 )),
             );
             let morphisms  = self.category.add_morphism(Rc::new(morphism))?;
             morphisms.clone()
         } else {
-            (*fs_to_h_homset.iter().last().unwrap().clone()).clone()
+            (*flatten_prefix_alphabet_to_h_homset.iter().last().unwrap().clone()).clone()
         };
         // if there is morphism we need to check if it commutes i.e
         // FS -> H -> powerset and FS -> power_set
         let commutation_result = self.category.morphism_commute(
-            vec![&fs_to_h, &prefix_to_powerset],
+            vec![&flatten_prefix_alphabet_to_h, &prefix_to_powerset],
             vec![&epic_morphism, &monic_morphism])?;
 
         match commutation_result {
@@ -259,7 +259,7 @@ impl <
                 oracle_object += &query_result.to_string();
             }
             // now find target object oracle object.
-            let target_object = self.suffix_power_set.get_object(oracle_object.into())?;
+            let target_object = self.suffix_power_set.get_object_reference(oracle_object.into())?;
             let target_identity_morphism = self.suffix_power_set.get_identity_morphism(&target_object)?;
             mappings.insert(
                 object.get_identity_morphism(sub_object)?.clone(),
@@ -311,7 +311,7 @@ impl <
                 },
                 Closed::NotClosed(non_closed_morphisms) => {
                     // if not closed, then we add a new prefix
-                    let mut new_prefix = (*self.prefix).clone();
+                    let mut new_prefix = (*self.prefix).clone_with_new_id();
                     for obj in non_closed_morphisms {
                         // for each non closed morphism, we need to add a new prefix
                         // i.e. we need to add a new object to the suffix
@@ -322,6 +322,7 @@ impl <
                     self.category.add_object(new_prefix.clone())?;
                     self.prefix = new_prefix;
                     self.create_prefix_alphabet();
+                    continue;
                 },
             }
 
