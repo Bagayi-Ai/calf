@@ -196,8 +196,8 @@ impl <
     }
 
     fn get_or_create_morphism_to_powerset(&mut self) -> Result<(
-        &Rc<Morphism<String, Category<String, SetCategory<String>>>>,
-        &Rc<Morphism<String, Category<String, SetCategory<String>>>>), CalfErrors>
+        &Rc<Morphism<String, SetCategory<String>>>,
+        &Rc<Morphism<String, SetCategory<String>>>), CalfErrors>
     {
 
         let prefix_to_power_set = self.category.get_hom_set(&*self.prefix, &*self.suffix_power_set)?;
