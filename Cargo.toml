@@ -1,3 +1,6 @@
 [workspace]
 resolver = "2"
 members = [ "crates/calf", "crates/oracles"]
+
+[workspace.dependencies]
+category_theory = { path = "/Users/mwas/RustroverProjects/CategoryTheory" }

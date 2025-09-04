@@ -1,16 +1,11 @@
 use std::hash::Hash;
 use std::collections::{HashMap, HashSet};
-use std::marker::PhantomData;
 use std::rc::Rc;
 use uuid::Uuid;
-use category_theory::core::traits::category_trait::{CategoryTrait, MorphismCommutationResult};
-use category_theory::core::category::Category;
-use category_theory::core::discrete_category::DiscreteCategory;
+use category_theory::core::traits::category_trait::{CategorySubObjectAlias, CategoryTrait, MorphismCommutationResult};
 use category_theory::core::functor::Functor;
-use category_theory::core::identifier::Identifier;
 use category_theory::core::morphism::Morphism;
 use category_theory::core::product_endofunctor::apply_product;
-use category_theory::core::set_category::SetCategory;
 use category_theory::core::traits::arrow_trait::ArrowTrait;
 use category_theory::core::epic_monic_category::EpicMonicCategory;
 use category_theory::core::expand_functor::expand_functor;
@@ -22,39 +17,43 @@ use crate::calf_errors::CalfErrors;
 use crate::oracle_trait::{OracleTrait, QueryInputTrait};
 
 
-enum Closed<Morphism: MorphismTrait> {
+enum Closed<Category: CategoryTrait> {
     Closed,
-    NotClosed(HashSet<Morphism>),
+    NotClosed(HashSet<Morphism<Category::Object>>),
 }
 
 
-enum Consistent<Morphism: MorphismTrait> {
+enum Consistent<Category: CategoryTrait> {
     Consistent,
-    NotConsistent(HashSet<Morphism>),
+    NotConsistent(HashSet<Morphism<Category::Object>>),
 }
 
 
 pub struct CALF<
     Oracle: OracleTrait<String>,
+    BaseCategory: CategoryTrait + Hash + Eq + Clone
 >
+where
+    <BaseCategory as CategoryTrait>::Object: Clone + From<String>,
+    <<BaseCategory as CategoryTrait>::Object as CategoryTrait>::Object: Clone,
 {
-    category: EpicMonicCategory<String, SetCategory<String>>,
+    category: EpicMonicCategory<BaseCategory>,
 
     // holds all the prefix the last being the current suffix
     // s in L* algorithm
-    prefix: Rc<SetCategory<String>>,
+    prefix: Rc<BaseCategory::Object>,
 
-    prefix_alphabet: Rc<SetCategory<String>>,
+    prefix_alphabet: Rc<BaseCategory::Object>,
 
-    flatten_prefix_alphabet: Rc<SetCategory<String>>,
+    flatten_prefix_alphabet: Rc<BaseCategory::Object>,
 
     // holds the suffixes of the last prefix
     // e in the L* algorithm
-    suffix: Rc<SetCategory<String>>,
+    suffix: Rc<BaseCategory::Object>,
 
-    alphabets: Rc<SetCategory<String>>,
+    alphabets: Rc<BaseCategory::Object>,
 
-    suffix_power_set: Rc<SetCategory<String>>,
+    suffix_power_set: Rc<BaseCategory::Object>,
 
     oracle: Oracle,
 }
@@ -62,25 +61,29 @@ pub struct CALF<
 
 impl <
     Oracle: OracleTrait<String>,
-> CALF<Oracle>
+    BaseCategory: CategoryTrait + Hash + Eq + Clone + for<'a> From<Vec<&'a str>> + From<String>
+> CALF<Oracle, BaseCategory>
+where
+    <BaseCategory as CategoryTrait>::Object: Clone + From<String>,
+    <<BaseCategory as CategoryTrait>::Object as CategoryTrait>::Object: Clone + From<String>,
 {
-    pub fn new(alphabets: Rc<SetCategory<String>>, oracle: Oracle) -> Self {
-        let mut category = EpicMonicCategory::<String, SetCategory<String>>::new();
+    pub fn new(alphabets: Rc<BaseCategory::Object>, oracle: Oracle) -> Self where <BaseCategory as CategoryTrait>::Object: for<'a> From<Vec<&'a str>> {
+        let mut category = EpicMonicCategory::<BaseCategory>::new();
         // add alphabet object to the category
         category.add_object(alphabets.clone()).expect("Failed to add alphabet object");
 
         // add prefix and suffix with empty.
-        let prefix: Rc<DiscreteCategory<String>> = Rc::new(vec![""].into());
+        let prefix: Rc<BaseCategory::Object> = Rc::new(vec![""].into());
         category.add_object(prefix.clone()).expect("Failed to add prefix");
 
-        let suffix = Rc::new(SetCategory::from(vec![""]));
+        let suffix: Rc<BaseCategory::Object> = Rc::new(vec![""].into());
         category.add_object(suffix.clone()).expect("Failed to add suffix");
 
-        let suffix_power_set = Rc::new(SetCategory::from(vec![""]));
+        let suffix_power_set: Rc<BaseCategory::Object> = Rc::new(vec![""].into());
         category.add_object(suffix_power_set.clone()).expect("Failed to add observations");
 
 
-        let prefix_alphabet = Rc::new(SetCategory::new());
+        let prefix_alphabet = Rc::new(BaseCategory::Object::new());
 
         let mut result = CALF {
             category,
@@ -90,7 +93,7 @@ impl <
             oracle,
             suffix_power_set,
             prefix_alphabet,
-            flatten_prefix_alphabet: Rc::new(SetCategory::new()),
+            flatten_prefix_alphabet: Rc::new(BaseCategory::Object::new()),
         };
         result.create_prefix_alphabet().unwrap();
         result.create_suffix_power_set();
@@ -98,7 +101,8 @@ impl <
         result
     }
 
-    pub fn is_closed(&mut self) -> Result<Closed<Morphism<String, SetCategory<String>>>, CalfErrors> {
+    pub fn is_closed(&mut self) -> Result<Closed<BaseCategory::Object>, CalfErrors>
+    {
         /*
         checks if wrapper is closed if not it creates a new suffix
 
@@ -131,7 +135,7 @@ impl <
 
         // now we need to check if there is a morphism from FS to H
         let flatten_prefix_alphabet_to_h_homset = self.category.get_hom_set(&*self.flatten_prefix_alphabet,
-                                                      epic_morphism.target_object())?;
+                                                      &**epic_morphism.target_object())?;
 
         // there should be not more than one morphism from FS to H
         if flatten_prefix_alphabet_to_h_homset.len() > 1 {
@@ -196,8 +200,8 @@ impl <
     }
 
     fn get_or_create_morphism_to_powerset(&mut self) -> Result<(
-        &Rc<Morphism<String, SetCategory<String>>>,
-        &Rc<Morphism<String, SetCategory<String>>>), CalfErrors>
+        &Rc<Morphism<CategorySubObjectAlias<BaseCategory>>>,
+        &Rc<Morphism<CategorySubObjectAlias<BaseCategory>>>), CalfErrors> where <<BaseCategory as CategoryTrait>::Object as CategoryTrait>::Object: From<String>
     {
 
         let prefix_to_power_set = self.category.get_hom_set(&*self.prefix, &*self.suffix_power_set)?;
@@ -245,7 +249,7 @@ impl <
     }
 
 
-    pub fn add_power_set_morphism(&mut self, object: &Rc<SetCategory<String>>) -> Result<(), CalfErrors>
+    pub fn add_power_set_morphism(&mut self, object: &Rc<BaseCategory::Object>) -> Result<(), CalfErrors>
     {
         let mut mappings = HashMap::new();
 
@@ -254,15 +258,15 @@ impl <
         for sub_object in object.get_all_objects()? {
             let mut oracle_object = "".to_string();
             for suffix in &suffix_objects{
-                let query = sub_object.category_id().to_owned() + suffix.category_id();
-                let query_result = self.oracle.membership_query(&query);
+                let query = sub_object.category_id().to_owned() + suffix.category_id().clone();
+                let query_result = self.oracle.membership_query(&query.to_string());
                 oracle_object += &query_result.to_string();
             }
             // now find target object oracle object.
-            let target_object = self.suffix_power_set.get_object_reference(oracle_object.into())?;
-            let target_identity_morphism = self.suffix_power_set.get_identity_morphism(&target_object)?;
+            let target_object = self.suffix_power_set.get_object(&<String as Into<<BaseCategory::Object as CategoryTrait>::Object>>::into(oracle_object))?;
+            let target_identity_morphism = self.suffix_power_set.get_identity_morphism(&**target_object)?;
             mappings.insert(
-                object.get_identity_morphism(sub_object)?.clone(),
+                object.get_identity_morphism(&**sub_object)?.clone(),
                 target_identity_morphism.clone()
             );
         }
@@ -284,7 +288,7 @@ impl <
     }
 
 
-    pub fn is_consistent(&self) -> Result<Consistent<Morphism<String, SetCategory<String>>>, CalfErrors> {
+    pub fn is_consistent(&self) -> Result<Consistent<BaseCategory::Object>, CalfErrors> {
         /*
         checks if the wrapper is consistent with the oracle
         i.e. for every (s,a) ∈ FS, there exists s′ ∈ S such that:
@@ -299,7 +303,8 @@ impl <
         Ok(Consistent::Consistent)
     }
 
-    pub fn run(&mut self) -> Result<(), CalfErrors> {
+    pub fn run(&mut self) -> Result<(), CalfErrors>
+    {
         loop {
 
             match self.is_closed()? {
@@ -312,7 +317,7 @@ impl <
                 },
                 Closed::NotClosed(non_closed_morphisms) => {
                     // if not closed, then we add a new prefix
-                    let mut new_prefix = (*self.prefix).clone_with_new_id();
+                    let mut new_prefix = (*self.prefix).clone();
                     for obj in non_closed_morphisms {
                         // for each non closed morphism, we need to add a new prefix
                         // i.e. we need to add a new object to the suffix
@@ -443,7 +448,7 @@ impl <
 
     fn create_suffix_power_set(&mut self) -> Result<(), CalfErrors> {
         // create all possible 2^E
-        let mut power_set = SetCategory::new();
+        let mut power_set = BaseCategory::Object::new();
         let n = self.suffix.get_all_objects()?.len();
 
         for i in 0..(1 << n) {
@@ -453,7 +458,8 @@ impl <
                 let value: bool = (i & (1 << j)) != 0;
                 row += &value.to_string();
             }
-            power_set.add_object(Rc::new(DiscreteCategory::from(row)))?;
+
+            power_set.add_object(Rc::new(<BaseCategory::Object as CategoryTrait>::Object::from(row)))?;
         }
         let power_set = Rc::new(power_set);
         // add the power set to the category
