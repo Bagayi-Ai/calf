@@ -65,7 +65,9 @@ impl <
 > CALF<Oracle, BaseCategory>
 where
     <BaseCategory as CategoryTrait>::Object: Clone + From<String>,
-    <<BaseCategory as CategoryTrait>::Object as CategoryTrait>::Object: Clone + From<String>,
+    <<BaseCategory as CategoryTrait>::Object as CategoryTrait>::Object: Clone + From<String> +
+        From<Rc<<<<BaseCategory as CategoryTrait>::Object as CategoryTrait>::Object as CategoryTrait>::Object>>,
+    <<BaseCategory as CategoryTrait>::Object as CategoryTrait>::Object:
 {
     pub fn new(alphabets: Rc<BaseCategory::Object>, oracle: Oracle) -> Self where <BaseCategory as CategoryTrait>::Object: for<'a> From<Vec<&'a str>> {
         let mut category = EpicMonicCategory::<BaseCategory>::new();
