@@ -4,9 +4,17 @@ use category_theory::core::errors::Errors;
 pub enum CalfErrors {
     UnknownError,
     MultipleMorphismsFromFSToPowerSet,
+    MultipleMorphismsFromFHtoPowerset,
+    MultipleMorphismsFromFStoFH,
     MultipleMorphismsFromSuffixToPowerSet,
     MembershipQueryObjectNotFound,
-    MultipleMorphismsFromFSToH
+    MultipleMorphismsFromFSToH,
+    NoMorphismFromFStoFH,
+    InvalidMappingFromFStoFH,
+    InvalidMappingFromFHtoPowerset,
+    InvalidMappingFromHtoPowerset,
+    MultipleMorphismsFromFStoH,
+    MultipleMorphismsFromFHtoH
 }
 
 impl From<Errors> for CalfErrors {

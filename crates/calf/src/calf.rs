@@ -105,6 +105,75 @@ where
         result
     }
 
+    pub fn run(&mut self) -> Result<(), CalfErrors>
+    {
+        loop {
+
+            match self.is_closed()? {
+                Closed::Closed => {
+                    // if closed, then we can check if it is consistent
+                    if matches!(self.is_consistent()?, Consistent::Consistent) {
+                        // if consistent, then we can stop
+                        break;
+                    }
+                },
+                Closed::NotClosed(non_closed_morphisms) => {
+                    // if not closed, then we add a new prefix
+                    // we clone and update category id to avoid conflicts
+                    let mut new_prefix = (*self.prefix).clone();
+                    new_prefix.update_category_id_generate();
+                    for obj in non_closed_morphisms {
+                        // for each non closed morphism, we need to add a new prefix
+                        // i.e. we need to add a new object to the suffix
+                        let new_object = obj.source_object().clone();
+                        new_prefix.add_object(new_object)?;
+                    }
+                    let new_prefix = Rc::new(new_prefix);
+                    self.category.add_object(new_prefix.clone())?;
+                    self.prefix = new_prefix;
+                    self.create_prefix_alphabet();
+                    continue;
+                },
+            }
+
+            match self.is_consistent()? {
+                Consistent::NotConsistent(non_consistent_morphisms) => {
+                    // if not consistent, then we need to add a new suffix
+                    // we clone and update category id to avoid conflicts
+                    // note clone of the category it self not Rc
+                    let mut new_suffix = (*self.suffix).clone();
+                    new_suffix.update_category_id_generate();
+                    for morphism in non_consistent_morphisms {
+                        // for each non consistent morphism, we need to add a new object to the suffix
+                        let new_object = morphism.source_object().clone();
+                        new_suffix.add_object(new_object)?;
+                    }
+                    let new_suffix = Rc::new(new_suffix);
+                    self.category.add_object(new_suffix.clone())?;
+                    self.suffix = new_suffix;
+                    self.create_suffix_power_set()?;
+                },
+                Consistent::Consistent => {
+                    // if consistent and closed, then we can stop
+                    if matches!(self.is_closed()?, Closed::Closed){
+                        break;
+                    }
+                },
+
+            }
+        }
+        let final_hypothesis_transition = self.get_or_add_hypothesis_transition()?;
+
+        // print states
+        let states = final_hypothesis_transition.target_object();
+        println!("States: {:?}", states.get_all_objects()?);
+
+        // print transitions
+        let transitions = final_hypothesis_transition.arrow_mappings();
+        println!("Transitions: {:?}", transitions);
+        Ok(())
+    }
+
     pub fn is_closed(&mut self) -> Result<Closed<BaseCategory::Object>, CalfErrors>
     {
         /*
@@ -198,6 +267,259 @@ where
         }
     }
 
+    pub fn is_consistent(&mut self) -> Result<Consistent<BaseCategory::Object>, CalfErrors> {
+        /*
+        checks if the wrapper is consistent with the oracle
+        i.e. for every (s,a) ∈ FS, there exists s′ ∈ S such that:
+        FS(s,a) ∈ FS, there exists s′ ∈ S such that:
+
+            (β∘δ∘Fα)(s,a)=(β∘α)(s′)
+
+        then you can define:
+            close W(s,a) = ew(s′) ∈ Hw
+
+
+            FS ----F𝛼 ----> FQt --- δ --------> P
+            |                                   |
+            | Fe                                |β
+            |                                   |
+            |                                   |
+            FH ---------consistent f------------> 2^E
+         */
+        // get morphism from FS to 2^E
+        let powerset_morphisms =
+            self.get_or_create_morphism_to_powerset()?;
+        let prefix_alphabet_to_power_set = powerset_morphisms.1.clone();
+
+        // prefix alphabet to hypothesis prefix alphabet
+        let fs_to_fh_morphisms =
+            self.category.get_hom_set(&*self.prefix_alphabet, &*self.hypothesis_prefix_alphabet)?;
+        if fs_to_fh_morphisms.len() > 1 {
+            return Err(CalfErrors::MultipleMorphismsFromFStoFH);
+        }
+        if fs_to_fh_morphisms.is_empty() {
+            return Err(CalfErrors::NoMorphismFromFStoFH);
+        }
+
+        let fs_to_fh =
+            fs_to_fh_morphisms.into_iter().last().unwrap().clone();
+
+        // now we need to check if there is a morphism from FH to 2^E
+        let fh_to_powerset_morphisms =
+            self.category.get_hom_set(&*self.hypothesis_prefix_alphabet, &*self.suffix_power_set)?;
+
+        if fh_to_powerset_morphisms.len() > 1 {
+            return Err(CalfErrors::MultipleMorphismsFromFHtoPowerset);
+        }
+
+        let fh_to_powerset = if fh_to_powerset_morphisms.is_empty() {
+            // if there is no morphism, then we need to create one
+            // create a new morphism from FH to 2^E
+
+            // since from FS to FH is epic
+            // for it to commute our mapping will map each object in FH to object in powerset such that FS maps to powerset
+            let mut fh_to_powerset_mapping = HashMap::new();
+
+            let fs_to_powerset_mapping: HashMap<_,_> = prefix_alphabet_to_power_set.arrow_mappings().iter()
+                .map(|(source, target)| (source.clone(), target.clone())).collect();
+            let fs_to_fh_mapping = fs_to_fh.arrow_mappings();
+            for (source_morphism, target_morphism) in fs_to_powerset_mapping {
+                // get morphism in epic morphism that maps to the target morphism
+                if let Some(fh_morphism) = fs_to_fh_mapping.get(&source_morphism)
+                {
+                    // check if this morphism is already mapped to the powerset
+                    if let Some(existing_mapping) = fh_to_powerset_mapping.get(fh_morphism) {
+                        // if it is already mapped, then check if it maps to the same target
+                        if existing_mapping != &target_morphism {
+                            return Ok(Consistent::NotConsistent(HashSet::from_iter([source_morphism.clone()])));
+                        }
+                        // if it maps to the same target, then continue
+                        continue;
+                    }
+                    else{
+                        // if it is not mapped, then map it
+                        fh_to_powerset_mapping.insert(fh_morphism.clone(), target_morphism.clone());
+                    }
+                }
+                else{
+                    return Err(CalfErrors::InvalidMappingFromFStoFH)
+                }
+            }
+
+            let morphism = Morphism::new(
+                Uuid::new_v4().to_string(),
+                self.hypothesis_prefix_alphabet.clone(),
+                self.suffix_power_set.clone(),
+                fh_to_powerset_mapping
+            );
+            let morphisms  = self.category.add_morphism(Rc::new(morphism))?;
+            morphisms.clone()
+        } else {
+            (*fh_to_powerset_morphisms.iter().last().unwrap().clone()).clone()
+        };
+
+        // if there is morphism we need to check if it commutes i.e
+        // FS -> FH -> powerset and FS -> power_set
+        let commutation_result = self.category.morphism_commute(
+            vec![&fs_to_fh, &fh_to_powerset],
+            vec![&prefix_alphabet_to_power_set])?;
+        // match commutation_result {
+        //     MorphismCommutationResult::Commutative => {
+        //         // if it commutes, then we have a consistent wrapper
+        //         return Ok(Consistent::Consistent);
+        //     },
+        //     MorphismCommutationResult::NonCommutative(non_commuting_morphisms) => {
+        //         // if it does not commute, then we have a not consistent wrapper
+        //         return Ok(Consistent::NotConsistent(non_commuting_morphisms));
+        //     },
+        // }
+        Ok(Consistent::Consistent)
+    }
+
+
+    pub fn get_or_add_hypothesis_transition(&mut self) -> Result<Rc<BaseCategory::Morphism>, CalfErrors> {
+        /*
+        FS ---Fe(epic)---> FH
+        |                 |
+        | Closed          | Consistent
+        |                 |
+        H ----monic ----> 2^E
+
+        hypothesis transition function is given by:
+          morphism from FH to H that makes the two triangles commute.
+
+         */
+        let fs_to_fh_morphisms =
+            self.category.get_hom_set(&*self.prefix_alphabet, &*self.hypothesis_prefix_alphabet)?;
+        if fs_to_fh_morphisms.len() != 1 {
+            return Err(CalfErrors::MultipleMorphismsFromFStoFH);
+        }
+        let fs_to_fh =
+            fs_to_fh_morphisms.into_iter().last().unwrap().clone();
+
+
+        let fh_to_powerset_morphisms =
+            self.category.get_hom_set(&*self.hypothesis_prefix_alphabet, &*self.suffix_power_set)?;
+        if fh_to_powerset_morphisms.len() != 1 {
+            return Err(CalfErrors::MultipleMorphismsFromFHtoPowerset);
+        }
+        let fh_to_powerset = fh_to_powerset_morphisms.into_iter().last().unwrap().clone();
+
+        // get epic and monic morphisms from prefix to powerset
+        let powerset_morphism = self.get_or_create_prefix_to_powerset_morphism()?.clone();
+        let morphism_factors = self.category.morphism_factors(&*powerset_morphism)?;
+        let monic_morphism = morphism_factors.1.clone();
+        let hypothesis = monic_morphism.source_object().clone();
+
+        let fs_to_h = self.category.get_hom_set(&*self.prefix_alphabet, &*hypothesis)?;
+        if fs_to_h.len() != 1 {
+            return Err(CalfErrors::MultipleMorphismsFromFStoH);
+        }
+        let fs_to_h = fs_to_h.into_iter().last().unwrap().clone();
+
+
+        // now we need to find a morphism from FH to H that makes the two triangles commute.
+        let mut fh_to_h_mappings = HashMap::new();
+        let fs_to_h_mappings = fs_to_h.arrow_mappings();
+        let fs_to_powerset_mappings = fh_to_powerset.arrow_mappings();
+
+        for (fs_morphism, fh_morphism) in fs_to_fh.arrow_mappings() {
+            // get where its mapped in H
+            if let Some(h_morphism) = fs_to_h_mappings.get(fs_morphism){
+                // now add it to fh to h mapping if it is not already there
+                if let Some(existing_mapping) = fh_to_h_mappings.get(fh_morphism) {
+                    // if it is already mapped, then check if it maps to the same target
+                    if existing_mapping != h_morphism {
+                        return Err(CalfErrors::InvalidMappingFromFStoFH);
+                    }
+                }
+                else{
+                    // if it is not mapped, then map it
+                    fh_to_h_mappings.insert(fh_morphism.clone(), h_morphism.clone());
+                }
+
+                // now check that it commutes with the other triangle
+                // fh_morphism -> powerset should be the same as fs_morphism -> h -> powerset
+                if let Some(fh_powerset_morphism) = fs_to_powerset_mappings.get(fh_morphism){
+                    // should be the same as h -> powerset
+                    if let Some(h_powerset_morphism) = monic_morphism.arrow_mappings().get(h_morphism){
+                        if fh_powerset_morphism != h_powerset_morphism {
+                            return Err(CalfErrors::InvalidMappingFromFHtoPowerset);
+                        }
+                    }
+                    else{
+                        return Err(CalfErrors::InvalidMappingFromHtoPowerset);
+                    }
+                }
+                else{
+                    return Err(CalfErrors::InvalidMappingFromFHtoPowerset);
+                }
+            }
+            else {
+                return Err(CalfErrors::InvalidMappingFromFStoFH);
+            }
+        }
+
+        let new_morphism = Rc::new(BaseCategory::Morphism::new(
+            Uuid::new_v4().to_string(),
+            self.hypothesis_prefix_alphabet.clone(),
+            hypothesis.clone(),
+            fh_to_h_mappings
+        ));
+
+        self.category.add_morphism(new_morphism.clone())?;
+        Ok(new_morphism)
+    }
+
+    fn create_prefix_alphabet(&mut self) -> Result<(), CalfErrors> {
+        let powerset_morphism = self.get_or_create_prefix_to_powerset_morphism()?.clone();
+        let morphism_factors =
+            self.category.morphism_factors(&*powerset_morphism)?;
+        let epic_morphism = morphism_factors.0.clone();
+
+        let product_mappings = apply_product(
+            &mut self.category,
+            &self.prefix,
+            self.alphabets.clone()).expect("Failed to apply");
+
+        let prefix_identity_morphism = self.category.get_identity_morphism(&*self.prefix)?;
+        if let Some(prefix_alphabet_identity_morphism) = product_mappings.get(prefix_identity_morphism) {
+            self.prefix_alphabet = prefix_alphabet_identity_morphism.source_object().clone();
+        } else {
+            return Err(CalfErrors::UnknownError);
+        }
+
+        // now create hypothesis prefix alphabet
+        if let Some(hypothesis_prefix_alphabet_identity_morphism) = product_mappings.get(&epic_morphism) {
+            self.hypothesis_prefix_alphabet = hypothesis_prefix_alphabet_identity_morphism.source_object().clone();
+        } else {
+            return Err(CalfErrors::UnknownError);
+        }
+
+        Ok(())
+    }
+
+    fn create_suffix_power_set(&mut self) -> Result<(), CalfErrors> {
+        // create all possible 2^E
+        let mut power_set = BaseCategory::Object::new();
+        let n = self.suffix.get_all_objects()?.len();
+
+        for i in 0..(1 << n) {
+            // add each element to the power set
+            let mut row = "".to_string();
+            for j in 0..n {
+                let value: bool = (i & (1 << j)) != 0;
+                row += &value.to_string();
+            }
+
+            power_set.add_object(Rc::new(<BaseCategory::Object as CategoryTrait>::Object::from(row)))?;
+        }
+        let power_set = Rc::new(power_set);
+        // add the power set to the category
+        self.category.add_object(power_set.clone())?;
+        self.suffix_power_set = power_set;
+        Ok(())
+    }
 
     fn get_or_create_prefix_to_powerset_morphism(&mut self) -> Result<&Rc<Morphism<CategorySubObjectAlias<BaseCategory>>>, CalfErrors>
     {
@@ -253,8 +575,8 @@ where
         Rc<Morphism<CategorySubObjectAlias<BaseCategory>>>), CalfErrors> where <<BaseCategory as CategoryTrait>::Object as CategoryTrait>::Object: From<String>
     {
 
-       let prefix_to_power_set_morphism = self.get_or_create_prefix_to_powerset_morphism()?.clone();
-       let prefix_alphabet_to_power_set = self.get_or_create_prefix_alphabet_to_powerset_morphism()?.clone();
+        let prefix_to_power_set_morphism = self.get_or_create_prefix_to_powerset_morphism()?.clone();
+        let prefix_alphabet_to_power_set = self.get_or_create_prefix_alphabet_to_powerset_morphism()?.clone();
 
         Ok((prefix_to_power_set_morphism, prefix_alphabet_to_power_set))
     }
@@ -298,173 +620,6 @@ where
         Ok(())
     }
 
-
-    pub fn is_consistent(&self) -> Result<Consistent<BaseCategory::Object>, CalfErrors> {
-        /*
-        checks if the wrapper is consistent with the oracle
-        i.e. for every (s,a) ∈ FS, there exists s′ ∈ S such that:
-        FS(s,a) ∈ FS, there exists s′ ∈ S such that:
-
-            (β∘δ∘Fα)(s,a)=(β∘α)(s′)
-
-        then you can define:
-            close W(s,a) = ew(s′) ∈ Hw
-         */
-
-        Ok(Consistent::Consistent)
-    }
-
-    pub fn run(&mut self) -> Result<(), CalfErrors>
-    {
-        loop {
-
-            match self.is_closed()? {
-                Closed::Closed => {
-                    // if closed, then we can check if it is consistent
-                    if matches!(self.is_consistent()?, Consistent::Consistent) {
-                        // if consistent, then we can stop
-                        break;
-                    }
-                },
-                Closed::NotClosed(non_closed_morphisms) => {
-                    // if not closed, then we add a new prefix
-                    let mut new_prefix = (*self.prefix).clone();
-                    for obj in non_closed_morphisms {
-                        // for each non closed morphism, we need to add a new prefix
-                        // i.e. we need to add a new object to the suffix
-                        let new_object = obj.source_object().clone();
-                        new_prefix.add_object(new_object)?;
-                    }
-                    let new_prefix = Rc::new(new_prefix);
-                    self.category.add_object(new_prefix.clone())?;
-                    self.prefix = new_prefix;
-                    self.create_prefix_alphabet();
-                    continue;
-                },
-            }
-
-            match self.is_consistent()? {
-                Consistent::NotConsistent(non_consistent_morphisms) => {
-                    // if not consistent, then we need to add a new suffix
-                    let mut new_suffix = (*self.suffix).clone();
-                    for morphism in non_consistent_morphisms {
-                        // for each non consistent morphism, we need to add a new object to the suffix
-                        let new_object = morphism.source_object().clone();
-                        new_suffix.add_object(new_object)?;
-                    }
-                    let new_suffix = Rc::new(new_suffix);
-                    self.category.add_object(new_suffix.clone())?;
-                    self.suffix = new_suffix;
-                    self.create_suffix_power_set()?;
-                },
-                Consistent::Consistent => {
-                    // if consistent and closed, then we can stop
-                    if matches!(self.is_closed()?, Closed::Closed){
-                        break;
-                    }
-                },
-
-            }
-        }
-        Ok(())
-    }
-
-    pub fn make_closed(&mut self) -> Result<(), CalfErrors> {
-        /*
-        checks if wrapper is closed if not it creates a new suffix
-
-        is closed if morphism closeW: FS -> H such that triangle commutes with estimation of f.
-
-        FS ----F𝛼 ----> FQt --- δ --------> P
-        |                                   |
-        | closeW                            |β
-        |                                   |
-        |                                   |
-        H ---------------m-----------------> 2^E
-
-
-        for t in s.a there exist s such that row(s) == row(s.a)
-
-        The wrapper (α,β) is closed if there exists a morphism:
-
-            close W:FS ----> Hw
-
-            such that
-
-                (β∘δ∘Fα)=mW∘close W
-
-
-        (β∘δ∘Fα)(s,a)(e)=L(sae)
-
-        If for every (s,a) ∈ FS, there exists s′ ∈ S such that:
-        FS(s,a) ∈ FS, there exists s′ ∈ S such that:
-
-            (β∘δ∘Fα)(s,a)=(β∘α)(s′)
-
-        then you can define:
-            close W(s,a) = ew(s′) ∈ Hw
-
-         */
-
-        // create observation table
-        // add morphism from suffix to observations
-
-        Ok(())
-    }
-
-    pub fn make_consistent(&mut self) -> Result<(), CalfErrors> {
-        todo!()
-    }
-
-    fn create_prefix_alphabet(&mut self) -> Result<(), CalfErrors> {
-        let powerset_morphism = self.get_or_create_prefix_to_powerset_morphism()?.clone();
-        let morphism_factors =
-            self.category.morphism_factors(&*powerset_morphism)?;
-        let epic_morphism = morphism_factors.0.clone();
-
-        let product_mappings = apply_product(
-            &mut self.category,
-            &self.prefix,
-            self.alphabets.clone()).expect("Failed to apply");
-
-        let prefix_identity_morphism = self.category.get_identity_morphism(&*self.prefix)?;
-        if let Some(prefix_alphabet_identity_morphism) = product_mappings.get(prefix_identity_morphism) {
-            self.prefix_alphabet = prefix_alphabet_identity_morphism.source_object().clone();
-        } else {
-            return Err(CalfErrors::UnknownError);
-        }
-
-        // now create hypothesis prefix alphabet
-        if let Some(hypothesis_prefix_alphabet_identity_morphism) = product_mappings.get(&epic_morphism) {
-            self.hypothesis_prefix_alphabet = hypothesis_prefix_alphabet_identity_morphism.source_object().clone();
-        } else {
-            return Err(CalfErrors::UnknownError);
-        }
-
-        Ok(())
-    }
-
-    fn create_suffix_power_set(&mut self) -> Result<(), CalfErrors> {
-        // create all possible 2^E
-        let mut power_set = BaseCategory::Object::new();
-        let n = self.suffix.get_all_objects()?.len();
-
-        for i in 0..(1 << n) {
-            // add each element to the power set
-            let mut row = "".to_string();
-            for j in 0..n {
-                let value: bool = (i & (1 << j)) != 0;
-                row += &value.to_string();
-            }
-
-            power_set.add_object(Rc::new(<BaseCategory::Object as CategoryTrait>::Object::from(row)))?;
-        }
-        let power_set = Rc::new(power_set);
-        // add the power set to the category
-        self.category.add_object(power_set.clone())?;
-        self.suffix_power_set = power_set;
-        Ok(())
-    }
 }
 
 
