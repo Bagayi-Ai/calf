@@ -1,13 +1,12 @@
 use std::hash::Hash;
 use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
+use std::sync::Arc;
 use uuid::Uuid;
-use category_theory::core::traits::category_trait::{CategorySubObjectAlias, CategoryTrait, MorphismCommutationResult};
+use category_theory::core::traits::category_trait::{CategorySubObjectAlias, CategoryTrait, MorphismCommutationResult, CategoryFromObjects};
 use category_theory::core::arrow::{Morphism, Functor, Arrow};
 use category_theory::core::product_endofunctor::apply_product;
 use category_theory::core::traits::arrow_trait::ArrowTrait;
 use category_theory::core::epic_monic_category::EpicMonicCategory;
-use category_theory::core::expand_functor::expand_functor;
 use category_theory::core::traits::factorization_system_trait::FactorizationSystemTrait;
 use crate::calf_errors::CalfErrors;
 use crate::oracle_trait::{OracleTrait, QueryInputTrait};
@@ -15,13 +14,13 @@ use crate::oracle_trait::{OracleTrait, QueryInputTrait};
 
 enum Closed<Category: CategoryTrait> {
     Closed,
-    NotClosed(HashSet<Rc<Category::Morphism>>),
+    NotClosed(HashSet<Arc<Category::Morphism>>),
 }
 
 
 enum Consistent<Category: CategoryTrait> {
     Consistent,
-    NotConsistent(HashSet<Rc<Category::Morphism>>),
+    NotConsistent(HashSet<Arc<Category::Morphism>>),
 }
 
 
@@ -37,25 +36,25 @@ where
 
     // holds all the prefix the last being the current suffix
     // s in L* algorithm
-    prefix: Rc<BaseCategory::Object>,
+    prefix: Arc<BaseCategory::Object>,
 
     // holds the product of prefix and alphabet
     // FS in the L* algorithm
-    prefix_alphabet: Rc<BaseCategory::Object>,
+    prefix_alphabet: Arc<BaseCategory::Object>,
 
-    hypothesis_prefix_alphabet: Rc<BaseCategory::Object>,
+    hypothesis_prefix_alphabet: Arc<BaseCategory::Object>,
 
     // holds the suffixes of the last prefix
     // e in the L* algorithm
-    suffix: Rc<BaseCategory::Object>,
+    suffix: Arc<BaseCategory::Object>,
 
     // holds the alphabet object
     // a in the L* algorithm
-    alphabets: Rc<BaseCategory::Object>,
+    alphabets: Arc<BaseCategory::Object>,
 
     // holds the observations
     // 2^E in the L* algorithm
-    suffix_power_set: Rc<BaseCategory::Object>,
+    suffix_power_set: Arc<BaseCategory::Object>,
 
     oracle: Oracle,
 }
@@ -64,30 +63,29 @@ where
 impl <Oracle, BaseCategory> CALF<Oracle, BaseCategory>
 where
     Oracle: OracleTrait<String>,
-    BaseCategory: CategoryTrait<Morphism = Arrow<<BaseCategory as CategoryTrait>::Object, <BaseCategory as CategoryTrait>::Object>> + Hash + Eq + Clone + for<'a> From<Vec<&'a str>> + From<String>,
-    <BaseCategory as CategoryTrait>::Object: Clone + From<String>,
+    BaseCategory: CategoryTrait<Morphism = Arrow<<BaseCategory as CategoryTrait>::Object, <BaseCategory as CategoryTrait>::Object>> + Hash + Eq + Clone ,
+    BaseCategory::Object: Clone + From<String>,
+    <BaseCategory::Object as CategoryTrait>::Object : Clone + From<String> + for<'a> From<&'a str>,
     <<BaseCategory::Object as CategoryTrait>::Object as CategoryTrait>::Object: Clone + From<String>,
-    <<BaseCategory as CategoryTrait>::Object as CategoryTrait>::Object: Clone + From<String> +
-        From<Rc<<<<BaseCategory as CategoryTrait>::Object as CategoryTrait>::Object as CategoryTrait>::Object>>,
-    <<BaseCategory as CategoryTrait>::Object as CategoryTrait>::Object:
 {
-    pub fn new(alphabets: Rc<BaseCategory::Object>, oracle: Oracle) -> Self where <BaseCategory as CategoryTrait>::Object: for<'a> From<Vec<&'a str>> {
+    pub async fn new(alphabets: Arc<BaseCategory::Object>, oracle: Oracle) -> Self
+    {
         let mut category = EpicMonicCategory::<BaseCategory>::new();
         // add alphabet object to the category
-        category.add_object(alphabets.clone()).expect("Failed to add alphabet object");
+        category.add_object(alphabets.clone()).await.expect("Failed to add alphabet object");
 
         // add prefix and suffix with empty.
-        let prefix: Rc<BaseCategory::Object> = Rc::new(vec![""].into());
-        category.add_object(prefix.clone()).expect("Failed to add prefix");
+        let prefix: Arc<BaseCategory::Object> = Arc::new(BaseCategory::Object::from_objects(vec![""]).await.unwrap());
+        category.add_object(prefix.clone()).await.expect("Failed to add prefix");
 
-        let suffix: Rc<BaseCategory::Object> = Rc::new(vec![""].into());
-        category.add_object(suffix.clone()).expect("Failed to add suffix");
+        let suffix: Arc<BaseCategory::Object> = Arc::new(BaseCategory::Object::from_objects(vec![""]).await.unwrap());
+        category.add_object(suffix.clone()).await.expect("Failed to add suffix");
 
-        let suffix_power_set: Rc<BaseCategory::Object> = Rc::new(vec![""].into());
-        category.add_object(suffix_power_set.clone()).expect("Failed to add observations");
+        let suffix_power_set: Arc<BaseCategory::Object> =Arc::new(BaseCategory::Object::from_objects(vec![""]).await.unwrap());
+        category.add_object(suffix_power_set.clone()).await.expect("Failed to add observations");
 
 
-        let prefix_alphabet = Rc::new(BaseCategory::Object::new());
+        let prefix_alphabet = Arc::new(BaseCategory::Object::new());
 
         let mut result = CALF {
             category,
@@ -97,22 +95,22 @@ where
             oracle,
             suffix_power_set,
             prefix_alphabet,
-            hypothesis_prefix_alphabet: Rc::new(BaseCategory::Object::new()),
+            hypothesis_prefix_alphabet: Arc::new(BaseCategory::Object::new()),
         };
-        result.create_suffix_power_set().unwrap();
+        result.create_suffix_power_set().await.unwrap();
         // order matters here since in prefix alphabet we need suffix power set to be initialized first
-        result.create_prefix_alphabet().unwrap();
+        result.create_prefix_alphabet().await.unwrap();
         result
     }
 
-    pub fn run(&mut self) -> Result<(), CalfErrors>
+    pub async fn run(&mut self) -> Result<(), CalfErrors>
     {
         loop {
 
-            match self.is_closed()? {
+            match self.is_closed().await? {
                 Closed::Closed => {
                     // if closed, then we can check if it is consistent
-                    if matches!(self.is_consistent()?, Consistent::Consistent) {
+                    if matches!(self.is_consistent().await?, Consistent::Consistent) {
                         // if consistent, then we can stop
                         break;
                     }
@@ -126,47 +124,47 @@ where
                         // for each non closed morphism, we need to add a new prefix
                         // i.e. we need to add a new object to the suffix
                         let new_object = obj.source_object().clone();
-                        new_prefix.add_object(new_object)?;
+                        new_prefix.add_object(new_object).await?;
                     }
-                    let new_prefix = Rc::new(new_prefix);
-                    self.category.add_object(new_prefix.clone())?;
+                    let new_prefix = Arc::new(new_prefix);
+                    self.category.add_object(new_prefix.clone()).await?;
                     self.prefix = new_prefix;
                     self.create_prefix_alphabet();
                     continue;
                 },
             }
 
-            match self.is_consistent()? {
+            match self.is_consistent().await? {
                 Consistent::NotConsistent(non_consistent_morphisms) => {
                     // if not consistent, then we need to add a new suffix
                     // we clone and update category id to avoid conflicts
-                    // note clone of the category it self not Rc
+                    // note clone of the category it self not Arc
                     let mut new_suffix = (*self.suffix).clone();
                     new_suffix.update_category_id_generate();
                     for morphism in non_consistent_morphisms {
                         // for each non consistent morphism, we need to add a new object to the suffix
                         let new_object = morphism.source_object().clone();
-                        new_suffix.add_object(new_object)?;
+                        new_suffix.add_object(new_object).await?;
                     }
-                    let new_suffix = Rc::new(new_suffix);
-                    self.category.add_object(new_suffix.clone())?;
+                    let new_suffix = Arc::new(new_suffix);
+                    self.category.add_object(new_suffix.clone()).await?;
                     self.suffix = new_suffix;
-                    self.create_suffix_power_set()?;
+                    self.create_suffix_power_set().await?;
                 },
                 Consistent::Consistent => {
                     // if consistent and closed, then we can stop
-                    if matches!(self.is_closed()?, Closed::Closed){
+                    if matches!(self.is_closed().await?, Closed::Closed){
                         break;
                     }
                 },
 
             }
         }
-        let final_hypothesis_transition = self.get_or_add_hypothesis_transition()?;
+        let final_hypothesis_transition = self.get_or_add_hypothesis_transition().await?;
 
         // print states
         let states = final_hypothesis_transition.target_object();
-        println!("States: {:?}", states.get_all_objects()?);
+        println!("States: {:?}", states.get_all_objects().await?);
 
         // print transitions
         let transitions = final_hypothesis_transition.arrow_mappings();
@@ -174,7 +172,7 @@ where
         Ok(())
     }
 
-    pub fn is_closed(&mut self) -> Result<Closed<BaseCategory::Object>, CalfErrors>
+    pub async fn is_closed(&mut self) -> Result<Closed<BaseCategory::Object>, CalfErrors>
     {
         /*
         checks if wrapper is closed if not it creates a new suffix
@@ -192,7 +190,7 @@ where
         // start by checking if there is a morphism from FS to 2^e
         // there should be only one morphism from FS to 2^E
         let powerset_morphisms =
-            self.get_or_create_morphism_to_powerset()?;
+            self.get_or_create_morphism_to_powerset().await?;
         let prefix_to_powerset = powerset_morphisms.0.clone();
         let prefix_alphabet_to_power_set = powerset_morphisms.1.clone();
 
@@ -208,7 +206,7 @@ where
 
         // now we need to check if there is a morphism from FS to H
         let prefix_alphabet_to_h_homset = self.category.get_hom_set(&*self.prefix_alphabet,
-                                                      &**epic_morphism.target_object())?;
+                                                      &**epic_morphism.target_object()).await?;
 
         // there should be not more than one morphism from FS to H
         if prefix_alphabet_to_h_homset.len() > 1 {
@@ -244,7 +242,7 @@ where
                 epic_morphism.target_object().clone(),
                 prefix_alphabet_to_h_mapping
             );
-            let morphisms  = self.category.add_morphism(Rc::new(morphism))?;
+            let morphisms  = self.category.add_morphism(Arc::new(morphism)).await?;
             morphisms.clone()
         } else {
             (*prefix_alphabet_to_h_homset.iter().last().unwrap().clone()).clone()
@@ -253,7 +251,7 @@ where
         // FS -> H -> powerset and FS -> power_set
         let commutation_result = self.category.morphism_commute(
             vec![&prefix_alphabet_to_h, &prefix_to_powerset],
-            vec![&epic_morphism, &monic_morphism])?;
+            vec![&epic_morphism, &monic_morphism]).await?;
 
         match commutation_result {
             MorphismCommutationResult::Commutative => {
@@ -267,7 +265,7 @@ where
         }
     }
 
-    pub fn is_consistent(&mut self) -> Result<Consistent<BaseCategory::Object>, CalfErrors> {
+    pub async fn is_consistent(&mut self) -> Result<Consistent<BaseCategory::Object>, CalfErrors> {
         /*
         checks if the wrapper is consistent with the oracle
         i.e. for every (s,a) ∈ FS, there exists s′ ∈ S such that:
@@ -288,12 +286,12 @@ where
          */
         // get morphism from FS to 2^E
         let powerset_morphisms =
-            self.get_or_create_morphism_to_powerset()?;
+            self.get_or_create_morphism_to_powerset().await?;
         let prefix_alphabet_to_power_set = powerset_morphisms.1.clone();
 
         // prefix alphabet to hypothesis prefix alphabet
         let fs_to_fh_morphisms =
-            self.category.get_hom_set(&*self.prefix_alphabet, &*self.hypothesis_prefix_alphabet)?;
+            self.category.get_hom_set(&*self.prefix_alphabet, &*self.hypothesis_prefix_alphabet).await?;
         if fs_to_fh_morphisms.len() > 1 {
             return Err(CalfErrors::MultipleMorphismsFromFStoFH);
         }
@@ -306,7 +304,7 @@ where
 
         // now we need to check if there is a morphism from FH to 2^E
         let fh_to_powerset_morphisms =
-            self.category.get_hom_set(&*self.hypothesis_prefix_alphabet, &*self.suffix_power_set)?;
+            self.category.get_hom_set(&*self.hypothesis_prefix_alphabet, &*self.suffix_power_set).await?;
 
         if fh_to_powerset_morphisms.len() > 1 {
             return Err(CalfErrors::MultipleMorphismsFromFHtoPowerset);
@@ -352,7 +350,7 @@ where
                 self.suffix_power_set.clone(),
                 fh_to_powerset_mapping
             );
-            let morphisms  = self.category.add_morphism(Rc::new(morphism))?;
+            let morphisms  = self.category.add_morphism(Arc::new(morphism)).await?;
             morphisms.clone()
         } else {
             (*fh_to_powerset_morphisms.iter().last().unwrap().clone()).clone()
@@ -362,7 +360,7 @@ where
         // FS -> FH -> powerset and FS -> power_set
         let commutation_result = self.category.morphism_commute(
             vec![&fs_to_fh, &fh_to_powerset],
-            vec![&prefix_alphabet_to_power_set])?;
+            vec![&prefix_alphabet_to_power_set]).await?;
         // match commutation_result {
         //     MorphismCommutationResult::Commutative => {
         //         // if it commutes, then we have a consistent wrapper
@@ -377,7 +375,7 @@ where
     }
 
 
-    pub fn get_or_add_hypothesis_transition(&mut self) -> Result<Rc<BaseCategory::Morphism>, CalfErrors> {
+    pub async fn get_or_add_hypothesis_transition(&mut self) -> Result<Arc<BaseCategory::Morphism>, CalfErrors> {
         /*
         FS ---Fe(epic)---> FH
         |                 |
@@ -390,7 +388,7 @@ where
 
          */
         let fs_to_fh_morphisms =
-            self.category.get_hom_set(&*self.prefix_alphabet, &*self.hypothesis_prefix_alphabet)?;
+            self.category.get_hom_set(&*self.prefix_alphabet, &*self.hypothesis_prefix_alphabet).await?;
         if fs_to_fh_morphisms.len() != 1 {
             return Err(CalfErrors::MultipleMorphismsFromFStoFH);
         }
@@ -399,19 +397,19 @@ where
 
 
         let fh_to_powerset_morphisms =
-            self.category.get_hom_set(&*self.hypothesis_prefix_alphabet, &*self.suffix_power_set)?;
+            self.category.get_hom_set(&*self.hypothesis_prefix_alphabet, &*self.suffix_power_set).await?;
         if fh_to_powerset_morphisms.len() != 1 {
             return Err(CalfErrors::MultipleMorphismsFromFHtoPowerset);
         }
         let fh_to_powerset = fh_to_powerset_morphisms.into_iter().last().unwrap().clone();
 
         // get epic and monic morphisms from prefix to powerset
-        let powerset_morphism = self.get_or_create_prefix_to_powerset_morphism()?.clone();
+        let powerset_morphism = self.get_or_create_prefix_to_powerset_morphism().await?.clone();
         let morphism_factors = self.category.morphism_factors(&*powerset_morphism)?;
         let monic_morphism = morphism_factors.1.clone();
         let hypothesis = monic_morphism.source_object().clone();
 
-        let fs_to_h = self.category.get_hom_set(&*self.prefix_alphabet, &*hypothesis)?;
+        let fs_to_h = self.category.get_hom_set(&*self.prefix_alphabet, &*hypothesis).await?;
         if fs_to_h.len() != 1 {
             return Err(CalfErrors::MultipleMorphismsFromFStoH);
         }
@@ -460,19 +458,19 @@ where
             }
         }
 
-        let new_morphism = Rc::new(BaseCategory::Morphism::new(
+        let new_morphism = Arc::new(BaseCategory::Morphism::new(
             Uuid::new_v4().to_string(),
             self.hypothesis_prefix_alphabet.clone(),
             hypothesis.clone(),
             fh_to_h_mappings
         ));
 
-        self.category.add_morphism(new_morphism.clone())?;
+        self.category.add_morphism(new_morphism.clone()).await?;
         Ok(new_morphism)
     }
 
-    fn create_prefix_alphabet(&mut self) -> Result<(), CalfErrors> {
-        let powerset_morphism = self.get_or_create_prefix_to_powerset_morphism()?.clone();
+    async fn create_prefix_alphabet(&mut self) -> Result<(), CalfErrors> {
+        let powerset_morphism = self.get_or_create_prefix_to_powerset_morphism().await?.clone();
         let morphism_factors =
             self.category.morphism_factors(&*powerset_morphism)?;
         let epic_morphism = morphism_factors.0.clone();
@@ -480,9 +478,9 @@ where
         let product_mappings = apply_product(
             &mut self.category,
             &self.prefix,
-            self.alphabets.clone()).expect("Failed to apply");
+            self.alphabets.clone()).await.expect("Failed to apply");
 
-        let prefix_identity_morphism = self.category.get_identity_morphism(&*self.prefix)?;
+        let prefix_identity_morphism = self.category.get_identity_morphism(&*self.prefix).await?;
         if let Some(prefix_alphabet_identity_morphism) = product_mappings.get(prefix_identity_morphism) {
             self.prefix_alphabet = prefix_alphabet_identity_morphism.source_object().clone();
         } else {
@@ -499,10 +497,10 @@ where
         Ok(())
     }
 
-    fn create_suffix_power_set(&mut self) -> Result<(), CalfErrors> {
+    async fn create_suffix_power_set(&mut self) -> Result<(), CalfErrors> {
         // create all possible 2^E
         let mut power_set = BaseCategory::Object::new();
-        let n = self.suffix.get_all_objects()?.len();
+        let n = self.suffix.get_all_objects().await?.len();
 
         for i in 0..(1 << n) {
             // add each element to the power set
@@ -512,83 +510,97 @@ where
                 row += &value.to_string();
             }
 
-            power_set.add_object(Rc::new(<BaseCategory::Object as CategoryTrait>::Object::from(row)))?;
+            power_set.add_object(Arc::new(<BaseCategory::Object as CategoryTrait>::Object::from(row))).await?;
         }
-        let power_set = Rc::new(power_set);
+        let power_set = Arc::new(power_set);
         // add the power set to the category
-        self.category.add_object(power_set.clone())?;
+        self.category.add_object(power_set.clone()).await?;
         self.suffix_power_set = power_set;
         Ok(())
     }
 
-    fn get_or_create_prefix_to_powerset_morphism(&mut self) -> Result<&Rc<Morphism<CategorySubObjectAlias<BaseCategory>>>, CalfErrors>
+    async fn get_or_create_prefix_to_powerset_morphism(&mut self) -> Result<Arc<Morphism<CategorySubObjectAlias<BaseCategory>>>, CalfErrors>
     {
-        let prefix_to_power_set = self.category.get_hom_set(&*self.prefix, &*self.suffix_power_set)?;
+        let mut already_added = false;
+        loop {
+            let prefix_to_power_set =
+                self.category.get_hom_set(&*self.prefix.clone(), &*self.suffix_power_set).await?;
+            // let prefix_to_power_set: Vec<_> = prefix_to_power_set.iter().map(|m| m.to_owned()).collect();
 
-        // if there is more than one morphism, then there is an error somewhere since there should be only one morphism
-        if prefix_to_power_set.len() > 1 {
-            return Err(CalfErrors::MultipleMorphismsFromSuffixToPowerSet);
-        }
+            // if there is more than one morphism, then there is an error somewhere since there should be only one morphism
+            if prefix_to_power_set.len() > 1 {
+                return Err(CalfErrors::MultipleMorphismsFromSuffixToPowerSet);
+            }
 
-        if prefix_to_power_set.is_empty() {
-            // now we create a mapping from suffix to power set via membership query
-            self.add_power_set_morphism(&self.prefix.clone())?;
-            return self.get_or_create_prefix_to_powerset_morphism();
-        }
+            if prefix_to_power_set.is_empty() {
+                if already_added {
+                    return Err(CalfErrors::ErrorAddingPowersetMorphism);
+                }
+                // now we create a mapping from suffix to power set via membership query
+                self.add_power_set_morphism(&self.prefix.clone()).await?;
+                already_added = true;
+                continue;
+            }
 
-        // here we have exactly one morphism from fs to power set and one from suffix to power set
-        let prefix_to_power_set_morphism = self.category.get_hom_set(&*self.prefix, &*self.suffix_power_set)?;
-        if prefix_to_power_set_morphism.is_empty() || prefix_to_power_set_morphism.len() > 1 {
+            // here we have exactly one morphism from fs to power set and one from suffix to power set
+            if prefix_to_power_set.len() == 1 {
+                let morphism = prefix_to_power_set.into_iter().last().unwrap().clone();
+                return Ok(morphism)
+            }
             return Err(CalfErrors::UnknownError);
         }
-
-        Ok(prefix_to_power_set_morphism.iter().last().unwrap())
     }
 
-    fn get_or_create_prefix_alphabet_to_powerset_morphism(&mut self) -> Result<&Rc<Morphism<CategorySubObjectAlias<BaseCategory>>>, CalfErrors>
+    async fn get_or_create_prefix_alphabet_to_powerset_morphism(&mut self) -> Result<Arc<Morphism<CategorySubObjectAlias<BaseCategory>>>, CalfErrors>
     {
-        let prefix_alphabet_to_power_set =
-            self.category.get_hom_set(&*self.prefix_alphabet, &*self.suffix_power_set)?;
+        let mut already_added = false;
+        loop {
+            let prefix_alphabet_to_power_set =
+                self.category.get_hom_set(&*self.prefix_alphabet.clone(), &*self.suffix_power_set).await?;
 
-        // there is more than one morphism, then there is an error somewhere since there should be only one morphism
-        if prefix_alphabet_to_power_set.len() > 1 {
-            return Err(CalfErrors::MultipleMorphismsFromFSToPowerSet);
-        }
+            // there is more than one morphism, then there is an error somewhere since there should be only one morphism
+            if prefix_alphabet_to_power_set.len() > 1 {
+                return Err(CalfErrors::MultipleMorphismsFromFSToPowerSet);
+            }
 
-        if prefix_alphabet_to_power_set.is_empty() {
-            // now we create a mapping from fs to power set via membership query
-            self.add_power_set_morphism(&self.prefix_alphabet.clone())?;
-            return self.get_or_create_prefix_alphabet_to_powerset_morphism();
-        }
+            if prefix_alphabet_to_power_set.is_empty() {
+                if already_added {
+                    return Err(CalfErrors::ErrorAddingPowersetMorphism);
+                }
+                // now we create a mapping from fs to power set via membership query
+                self.add_power_set_morphism(&self.prefix_alphabet.clone()).await?;
+                already_added = true;
+                continue;
+            }
 
-        // here we have exactly one morphism from fs to power set and one from suffix to power set
-        let prefix_alphabet_to_power_set = self.category.get_hom_set(&*self.prefix_alphabet, &*self.suffix_power_set)?;
-        if prefix_alphabet_to_power_set.is_empty() || prefix_alphabet_to_power_set.len() > 1 {
+            // here we have exactly one morphism from fs to power set and one from suffix to power set
+            if prefix_alphabet_to_power_set.len() == 1 {
+                return Ok(prefix_alphabet_to_power_set.into_iter().last().unwrap().clone())
+            }
+
             return Err(CalfErrors::UnknownError);
         }
-
-        Ok(prefix_alphabet_to_power_set.iter().last().unwrap())
     }
 
-    fn get_or_create_morphism_to_powerset(&mut self) -> Result<(
-        Rc<Morphism<CategorySubObjectAlias<BaseCategory>>>,
-        Rc<Morphism<CategorySubObjectAlias<BaseCategory>>>), CalfErrors> where <<BaseCategory as CategoryTrait>::Object as CategoryTrait>::Object: From<String>
+    async fn get_or_create_morphism_to_powerset(&mut self) -> Result<(
+        Arc<Morphism<CategorySubObjectAlias<BaseCategory>>>,
+        Arc<Morphism<CategorySubObjectAlias<BaseCategory>>>), CalfErrors>
     {
 
-        let prefix_to_power_set_morphism = self.get_or_create_prefix_to_powerset_morphism()?.clone();
-        let prefix_alphabet_to_power_set = self.get_or_create_prefix_alphabet_to_powerset_morphism()?.clone();
+        let prefix_to_power_set_morphism = self.get_or_create_prefix_to_powerset_morphism().await?.clone();
+        let prefix_alphabet_to_power_set = self.get_or_create_prefix_alphabet_to_powerset_morphism().await?.clone();
 
         Ok((prefix_to_power_set_morphism, prefix_alphabet_to_power_set))
     }
 
 
-    pub fn add_power_set_morphism(&mut self, object: &Rc<BaseCategory::Object>) -> Result<(), CalfErrors>
+    pub async fn add_power_set_morphism(&mut self, object: &Arc<BaseCategory::Object>) -> Result<(), CalfErrors>
     {
         let mut mappings = HashMap::new();
 
-        let suffix_objects = self.suffix.get_all_objects()?;
+        let suffix_objects = self.suffix.get_all_objects().await?;
         // map identity morphism first.
-        for sub_object in object.get_all_objects()? {
+        for sub_object in object.get_all_objects().await? {
             let mut oracle_object = "".to_string();
             for suffix in &suffix_objects{
                 let query = sub_object.category_id().to_owned() + suffix.category_id().clone();
@@ -598,13 +610,13 @@ where
             // now find target object oracle object.
             println!("Mapping object {} to {}", sub_object.category_id(), oracle_object);
             println!("Suffix object");
-            for s in self.suffix_power_set.get_all_objects()?{
+            for s in self.suffix_power_set.get_all_objects().await?{
                 println!(" - {}", s.category_id());
             }
-            let target_object = self.suffix_power_set.get_object(&<String as Into<<BaseCategory::Object as CategoryTrait>::Object>>::into(oracle_object))?;
-            let target_identity_morphism = self.suffix_power_set.get_identity_morphism(&**target_object)?;
+            let target_object = self.suffix_power_set.get_object(&<String as Into<<BaseCategory::Object as CategoryTrait>::Object>>::into(oracle_object)).await?;
+            let target_identity_morphism = self.suffix_power_set.get_identity_morphism(&**target_object).await?;
             mappings.insert(
-                object.get_identity_morphism(&**sub_object)?.clone(),
+                object.get_identity_morphism(&**sub_object).await?.clone(),
                 target_identity_morphism.clone()
             );
         }
@@ -616,7 +628,7 @@ where
             self.suffix_power_set.clone(),
             mappings,
         );
-        self.category.add_morphism(Rc::new(morphism))?;
+        self.category.add_morphism(Arc::new(morphism)).await?;
         Ok(())
     }
 
