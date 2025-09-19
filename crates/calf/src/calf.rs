@@ -7,6 +7,7 @@ use category_theory::core::arrow::{Morphism, Functor, Arrow};
 use category_theory::core::product_endofunctor::apply_product;
 use category_theory::core::traits::arrow_trait::ArrowTrait;
 use category_theory::core::epic_monic_category::EpicMonicCategory;
+use category_theory::core::object_id::ObjectId;
 use category_theory::core::traits::factorization_system_trait::FactorizationSystemTrait;
 use crate::calf_errors::CalfErrors;
 use crate::oracle_trait::{OracleTrait, QueryInputTrait};
@@ -66,11 +67,11 @@ where
     BaseCategory: CategoryTrait<Morphism = Arrow<<BaseCategory as CategoryTrait>::Object, <BaseCategory as CategoryTrait>::Object>> + Hash + Eq + Clone ,
     BaseCategory::Object: Clone + From<String>,
     <BaseCategory::Object as CategoryTrait>::Object : Clone + From<String> + for<'a> From<&'a str>,
-    <<BaseCategory::Object as CategoryTrait>::Object as CategoryTrait>::Object: Clone + From<String>,
+    <<BaseCategory::Object as CategoryTrait>::Object as CategoryTrait>::Object: Clone + From<String> + From<ObjectId>,
 {
     pub async fn new(alphabets: Arc<BaseCategory::Object>, oracle: Oracle) -> Self
     {
-        let mut category = EpicMonicCategory::<BaseCategory>::new();
+        let mut category = EpicMonicCategory::<BaseCategory>::new().await.unwrap();
         // add alphabet object to the category
         category.add_object(alphabets.clone()).await.expect("Failed to add alphabet object");
 
@@ -85,7 +86,7 @@ where
         category.add_object(suffix_power_set.clone()).await.expect("Failed to add observations");
 
 
-        let prefix_alphabet = Arc::new(BaseCategory::Object::new());
+        let prefix_alphabet = Arc::new(BaseCategory::Object::new().await.unwrap());
 
         let mut result = CALF {
             category,
@@ -95,7 +96,7 @@ where
             oracle,
             suffix_power_set,
             prefix_alphabet,
-            hypothesis_prefix_alphabet: Arc::new(BaseCategory::Object::new()),
+            hypothesis_prefix_alphabet: Arc::new(BaseCategory::Object::new().await.unwrap()),
         };
         result.create_suffix_power_set().await.unwrap();
         // order matters here since in prefix alphabet we need suffix power set to be initialized first
@@ -236,14 +237,14 @@ where
 
             }
 
-            let morphism = Morphism::new(
+            let morphism = Arc::new(Morphism::new(
                 Uuid::new_v4().to_string(),
                 self.prefix_alphabet.clone(),
                 epic_morphism.target_object().clone(),
                 prefix_alphabet_to_h_mapping
-            );
-            let morphisms  = self.category.add_morphism(Arc::new(morphism)).await?;
-            morphisms.clone()
+            ));
+            self.category.add_morphism(morphism.clone()).await?;
+            morphism.clone()
         } else {
             (*prefix_alphabet_to_h_homset.iter().last().unwrap().clone()).clone()
         };
@@ -344,14 +345,14 @@ where
                 }
             }
 
-            let morphism = Morphism::new(
+            let morphism = Arc::new(Morphism::new(
                 Uuid::new_v4().to_string(),
                 self.hypothesis_prefix_alphabet.clone(),
                 self.suffix_power_set.clone(),
                 fh_to_powerset_mapping
-            );
-            let morphisms  = self.category.add_morphism(Arc::new(morphism)).await?;
-            morphisms.clone()
+            ));
+            self.category.add_morphism(morphism.clone()).await?;
+            morphism.clone()
         } else {
             (*fh_to_powerset_morphisms.iter().last().unwrap().clone()).clone()
         };
@@ -499,7 +500,7 @@ where
 
     async fn create_suffix_power_set(&mut self) -> Result<(), CalfErrors> {
         // create all possible 2^E
-        let mut power_set = BaseCategory::Object::new();
+        let mut power_set = BaseCategory::Object::new().await?;
         let n = self.suffix.get_all_objects().await?.len();
 
         for i in 0..(1 << n) {
