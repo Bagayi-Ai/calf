@@ -2,8 +2,9 @@ use std::hash::Hash;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use uuid::Uuid;
-use category_theory::core::traits::category_trait::{CategorySubObjectAlias, CategoryTrait, MorphismCommutationResult, CategoryFromObjects};
-use category_theory::core::arrow::{Morphism, Functor, Arrow};
+use category_theory::core::traits::category_trait::{CategorySubObjectAlias, CategoryTrait, MorphismCommutationResult, CategoryFromObjects, CategoryCloneWithNewId};
+use category_theory::core::arrow::{Morphism, Arrow};
+use category_theory::core::functor::Functor;
 use category_theory::core::product_endofunctor::apply_product;
 use category_theory::core::traits::arrow_trait::ArrowTrait;
 use category_theory::core::epic_monic_category::EpicMonicCategory;
@@ -30,7 +31,7 @@ pub struct CALF<
     BaseCategory: CategoryTrait + Hash + Eq + Clone
 >
 where
-    <BaseCategory as CategoryTrait>::Object: Clone + From<String>,
+    <BaseCategory as CategoryTrait>::Object: Clone + From<String> + CategoryCloneWithNewId,
     <<BaseCategory as CategoryTrait>::Object as CategoryTrait>::Object: Clone,
 {
     category: EpicMonicCategory<BaseCategory>,
@@ -65,7 +66,7 @@ impl <Oracle, BaseCategory> CALF<Oracle, BaseCategory>
 where
     Oracle: OracleTrait<String>,
     BaseCategory: CategoryTrait<Morphism = Arrow<<BaseCategory as CategoryTrait>::Object, <BaseCategory as CategoryTrait>::Object>> + Hash + Eq + Clone ,
-    BaseCategory::Object: Clone + From<String>,
+    BaseCategory::Object: Clone + From<String> + CategoryCloneWithNewId,
     <BaseCategory::Object as CategoryTrait>::Object : Clone + From<String> + for<'a> From<&'a str>,
     <<BaseCategory::Object as CategoryTrait>::Object as CategoryTrait>::Object: Clone + From<String> + From<ObjectId>,
 {
@@ -119,8 +120,7 @@ where
                 Closed::NotClosed(non_closed_morphisms) => {
                     // if not closed, then we add a new prefix
                     // we clone and update category id to avoid conflicts
-                    let mut new_prefix = (*self.prefix).clone();
-                    new_prefix.update_category_id_generate();
+                    let mut new_prefix = (*self.prefix).clone_with_new_id().await?;
                     for obj in non_closed_morphisms {
                         // for each non closed morphism, we need to add a new prefix
                         // i.e. we need to add a new object to the suffix
@@ -140,8 +140,7 @@ where
                     // if not consistent, then we need to add a new suffix
                     // we clone and update category id to avoid conflicts
                     // note clone of the category it self not Arc
-                    let mut new_suffix = (*self.suffix).clone();
-                    new_suffix.update_category_id_generate();
+                    let mut new_suffix = (*self.suffix).clone_with_new_id().await?;
                     for morphism in non_consistent_morphisms {
                         // for each non consistent morphism, we need to add a new object to the suffix
                         let new_object = morphism.source_object().clone();
@@ -222,13 +221,14 @@ where
             // our mapping will map each obect in FS to object in H such that H maps to powerset
             let mut prefix_alphabet_to_h_mapping = HashMap::new();
 
-            let monic_powerset_reverse_mapping: HashMap<_,_> = monic_morphism.arrow_mappings().iter()
+            let monic_powerset_reverse_mapping: HashMap<_,_> = monic_morphism.arrow_mappings().into_iter().flatten()
                 .map(|(source, target)| (target.clone(), source.clone())).collect();
-            for (source_morphism, target_morphism) in prefix_alphabet_to_power_set.arrow_mappings() {
+            for (source_morphism, target_morphism) in prefix_alphabet_to_power_set.arrow_mappings().into_iter().flatten() {
                 // map each source morphism to a morphism in H
                 // get morphism in monic morphism that maps to the target morphism
                 if let Some(h_source_morphism) = monic_powerset_reverse_mapping.get(target_morphism) {
                     prefix_alphabet_to_h_mapping.insert(source_morphism.clone(), h_source_morphism.clone());
+                    return Ok(Closed::NotClosed(HashSet::from_iter([source_morphism.clone()])));
                 }
                 else{
                     // if there is no matching morphism in H, then its not closed
@@ -237,8 +237,7 @@ where
 
             }
 
-            let morphism = Arc::new(Morphism::new(
-                Uuid::new_v4().to_string(),
+            let morphism = Arc::new(Morphism::new_with_mappings(
                 self.prefix_alphabet.clone(),
                 epic_morphism.target_object().clone(),
                 prefix_alphabet_to_h_mapping
@@ -319,17 +318,17 @@ where
             // for it to commute our mapping will map each object in FH to object in powerset such that FS maps to powerset
             let mut fh_to_powerset_mapping = HashMap::new();
 
-            let fs_to_powerset_mapping: HashMap<_,_> = prefix_alphabet_to_power_set.arrow_mappings().iter()
-                .map(|(source, target)| (source.clone(), target.clone())).collect();
-            let fs_to_fh_mapping = fs_to_fh.arrow_mappings();
+            let fs_to_powerset_mapping: HashMap<_,_> = prefix_alphabet_to_power_set.arrow_mappings().into_iter().flatten().collect();
+                // .map(|(source, target)| (source.clone(), target.clone())).collect();
+            let fs_to_fh_mapping: HashMap<_, _> = fs_to_fh.arrow_mappings().into_iter().flatten().collect();
             for (source_morphism, target_morphism) in fs_to_powerset_mapping {
                 // get morphism in epic morphism that maps to the target morphism
                 if let Some(fh_morphism) = fs_to_fh_mapping.get(&source_morphism)
                 {
                     // check if this morphism is already mapped to the powerset
-                    if let Some(existing_mapping) = fh_to_powerset_mapping.get(fh_morphism) {
+                    if let Some(existing_mapping) = fh_to_powerset_mapping.get(*fh_morphism) {
                         // if it is already mapped, then check if it maps to the same target
-                        if existing_mapping != &target_morphism {
+                        if existing_mapping != target_morphism {
                             return Ok(Consistent::NotConsistent(HashSet::from_iter([source_morphism.clone()])));
                         }
                         // if it maps to the same target, then continue
@@ -337,7 +336,7 @@ where
                     }
                     else{
                         // if it is not mapped, then map it
-                        fh_to_powerset_mapping.insert(fh_morphism.clone(), target_morphism.clone());
+                        fh_to_powerset_mapping.insert(fh_morphism.clone().clone(), target_morphism.clone());
                     }
                 }
                 else{
@@ -345,8 +344,7 @@ where
                 }
             }
 
-            let morphism = Arc::new(Morphism::new(
-                Uuid::new_v4().to_string(),
+            let morphism = Arc::new(Morphism::new_with_mappings(
                 self.hypothesis_prefix_alphabet.clone(),
                 self.suffix_power_set.clone(),
                 fh_to_powerset_mapping
@@ -408,6 +406,7 @@ where
         let powerset_morphism = self.get_or_create_prefix_to_powerset_morphism().await?.clone();
         let morphism_factors = self.category.morphism_factors(&*powerset_morphism)?;
         let monic_morphism = morphism_factors.1.clone();
+        let monic_morphism_mapping = monic_morphism.arrow_mappings().into_iter().flatten().collect::<HashMap<_,_>>();
         let hypothesis = monic_morphism.source_object().clone();
 
         let fs_to_h = self.category.get_hom_set(&*self.prefix_alphabet, &*hypothesis).await?;
@@ -419,29 +418,29 @@ where
 
         // now we need to find a morphism from FH to H that makes the two triangles commute.
         let mut fh_to_h_mappings = HashMap::new();
-        let fs_to_h_mappings = fs_to_h.arrow_mappings();
-        let fs_to_powerset_mappings = fh_to_powerset.arrow_mappings();
+        let fs_to_h_mappings: HashMap<_, _> = fs_to_h.arrow_mappings().into_iter().flatten().collect();
+        let fs_to_powerset_mappings: HashMap<_, _> = fh_to_powerset.arrow_mappings().into_iter().flatten().collect();
 
-        for (fs_morphism, fh_morphism) in fs_to_fh.arrow_mappings() {
+        for (fs_morphism, fh_morphism) in fs_to_fh.arrow_mappings().into_iter().flatten() {
             // get where its mapped in H
             if let Some(h_morphism) = fs_to_h_mappings.get(fs_morphism){
                 // now add it to fh to h mapping if it is not already there
                 if let Some(existing_mapping) = fh_to_h_mappings.get(fh_morphism) {
                     // if it is already mapped, then check if it maps to the same target
-                    if existing_mapping != h_morphism {
+                    if existing_mapping != *h_morphism {
                         return Err(CalfErrors::InvalidMappingFromFStoFH);
                     }
                 }
                 else{
                     // if it is not mapped, then map it
-                    fh_to_h_mappings.insert(fh_morphism.clone(), h_morphism.clone());
+                    fh_to_h_mappings.insert(fh_morphism.clone(), h_morphism.clone().clone());
                 }
 
                 // now check that it commutes with the other triangle
                 // fh_morphism -> powerset should be the same as fs_morphism -> h -> powerset
                 if let Some(fh_powerset_morphism) = fs_to_powerset_mappings.get(fh_morphism){
                     // should be the same as h -> powerset
-                    if let Some(h_powerset_morphism) = monic_morphism.arrow_mappings().get(h_morphism){
+                    if let Some(h_powerset_morphism) = monic_morphism_mapping.get(h_morphism){
                         if fh_powerset_morphism != h_powerset_morphism {
                             return Err(CalfErrors::InvalidMappingFromFHtoPowerset);
                         }
@@ -459,8 +458,7 @@ where
             }
         }
 
-        let new_morphism = Arc::new(BaseCategory::Morphism::new(
-            Uuid::new_v4().to_string(),
+        let new_morphism = Arc::new(BaseCategory::Morphism::new_with_mappings(
             self.hypothesis_prefix_alphabet.clone(),
             hypothesis.clone(),
             fh_to_h_mappings
@@ -623,8 +621,7 @@ where
         }
 
         // create a new morphism from object to power set
-        let morphism = Morphism::new(
-            Uuid::new_v4().to_string(),
+        let morphism = Morphism::new_with_mappings(
             object.clone(),
             self.suffix_power_set.clone(),
             mappings,

@@ -7,19 +7,22 @@ use category_theory::core::base_category::BaseCategory;
 use category_theory::core::discrete_category::DiscreteCategory;
 use category_theory::core::dynamic_category::DynamicCategory;
 use category_theory::core::object_id::ObjectId;
-use category_theory::core::traits::category_trait::{CategoryTrait, CategoryFromObjects};
+use category_theory::core::persistable_category::PersistableCategory;
+use category_theory::core::traits::category_trait::{CategoryTrait, CategoryFromObjects, CategoryCloneWithNewId};
 
 
 #[tokio::main]
 async fn main() {
-    run::<DiscreteCategory>().await;
+    category_theory::init_db().await.unwrap();
+    run::<PersistableCategory<DynamicCategory>>().await;
+    // run::<DiscreteCategory>().await;
     // run::<DynamicCategory>().await;
 }
 
 
 async fn run<Category>()
 where
-    Category: CategoryTrait + Hash + Eq + Clone + From<String>,
+    Category: CategoryTrait + Hash + Eq + Clone + From<String> + CategoryCloneWithNewId,
     Category::Object: Clone + for<'a> From<&'a str> + From<String>,
     <Category::Object as CategoryTrait>::Object: Clone + for<'a> From<&'a str> + From<String> + From<ObjectId>,
 {
