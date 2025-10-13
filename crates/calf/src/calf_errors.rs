@@ -16,6 +16,7 @@ pub enum CalfErrors {
     MultipleMorphismsFromFStoH,
     MultipleMorphismsFromFHtoH,
     ErrorAddingPowersetMorphism,
+    CategoryExportError(String),
 }
 
 impl From<Errors> for CalfErrors {

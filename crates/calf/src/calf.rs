@@ -4,6 +4,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 use category_theory::core::traits::category_trait::{CategorySubObjectAlias, CategoryTrait, MorphismCommutationResult, CategoryFromObjects, CategoryCloneWithNewId};
 use category_theory::core::arrow::{Morphism, Arrow};
+use category_theory::core::cytosjsexport::save_category_to_cytoscape_json_file;
 use category_theory::core::functor::Functor;
 use category_theory::core::product_endofunctor::apply_product;
 use category_theory::core::traits::arrow_trait::ArrowTrait;
@@ -11,8 +12,11 @@ use category_theory::core::epic_monic_category::EpicMonicCategory;
 use category_theory::core::object_id::ObjectId;
 use category_theory::core::traits::factorization_system_trait::FactorizationSystemTrait;
 use crate::calf_errors::CalfErrors;
+use category_theory::core::functors::inclusion_functor::inclusion_functor;
 use crate::oracle_trait::{OracleTrait, QueryInputTrait};
-
+use category_theory::core::identifier::Identifier;
+use category_theory::core::persistable_category::PersistableCategory;
+use category_theory::core::persistable_factorization_category::PersistableFactorizationCategory;
 
 enum Closed<Category: CategoryTrait> {
     Closed,
@@ -28,13 +32,15 @@ enum Consistent<Category: CategoryTrait> {
 
 pub struct CALF<
     Oracle: OracleTrait<String>,
-    BaseCategory: CategoryTrait + Hash + Eq + Clone
+    BaseCategory: CategoryTrait<
+        Morphism = Arrow<<BaseCategory as CategoryTrait>::Object,
+            <BaseCategory as CategoryTrait>::Object>> + Hash + Eq + Clone
 >
 where
     <BaseCategory as CategoryTrait>::Object: Clone + From<String> + CategoryCloneWithNewId,
     <<BaseCategory as CategoryTrait>::Object as CategoryTrait>::Object: Clone,
 {
-    category: EpicMonicCategory<BaseCategory>,
+    category: PersistableFactorizationCategory<EpicMonicCategory<BaseCategory>>,
 
     // holds all the prefix the last being the current suffix
     // s in L* algorithm
@@ -72,7 +78,8 @@ where
 {
     pub async fn new(alphabets: Arc<BaseCategory::Object>, oracle: Oracle) -> Self
     {
-        let mut category = EpicMonicCategory::<BaseCategory>::new().await.unwrap();
+        let mut category =
+            PersistableFactorizationCategory::new().await.unwrap();
         // add alphabet object to the category
         category.add_object(alphabets.clone()).await.expect("Failed to add alphabet object");
 
@@ -118,19 +125,11 @@ where
                     }
                 },
                 Closed::NotClosed(non_closed_morphisms) => {
-                    // if not closed, then we add a new prefix
-                    // we clone and update category id to avoid conflicts
-                    let mut new_prefix = (*self.prefix).clone_with_new_id().await?;
-                    for obj in non_closed_morphisms {
-                        // for each non closed morphism, we need to add a new prefix
-                        // i.e. we need to add a new object to the suffix
-                        let new_object = obj.source_object().clone();
-                        new_prefix.add_object(new_object).await?;
-                    }
-                    let new_prefix = Arc::new(new_prefix);
-                    self.category.add_object(new_prefix.clone()).await?;
+                    // if not closed, then we need to add a new prefix
+                    let new_prefix = self.update_table(
+                        &self.prefix.clone(), non_closed_morphisms).await?;
                     self.prefix = new_prefix;
-                    self.create_prefix_alphabet();
+                    self.create_prefix_alphabet().await?;
                     continue;
                 },
             }
@@ -138,16 +137,8 @@ where
             match self.is_consistent().await? {
                 Consistent::NotConsistent(non_consistent_morphisms) => {
                     // if not consistent, then we need to add a new suffix
-                    // we clone and update category id to avoid conflicts
-                    // note clone of the category it self not Arc
-                    let mut new_suffix = (*self.suffix).clone_with_new_id().await?;
-                    for morphism in non_consistent_morphisms {
-                        // for each non consistent morphism, we need to add a new object to the suffix
-                        let new_object = morphism.source_object().clone();
-                        new_suffix.add_object(new_object).await?;
-                    }
-                    let new_suffix = Arc::new(new_suffix);
-                    self.category.add_object(new_suffix.clone()).await?;
+                    let new_suffix = self.update_table(
+                        &self.suffix.clone(), non_consistent_morphisms).await?;
                     self.suffix = new_suffix;
                     self.create_suffix_power_set().await?;
                 },
@@ -228,7 +219,6 @@ where
                 // get morphism in monic morphism that maps to the target morphism
                 if let Some(h_source_morphism) = monic_powerset_reverse_mapping.get(target_morphism) {
                     prefix_alphabet_to_h_mapping.insert(source_morphism.clone(), h_source_morphism.clone());
-                    return Ok(Closed::NotClosed(HashSet::from_iter([source_morphism.clone()])));
                 }
                 else{
                     // if there is no matching morphism in H, then its not closed
@@ -630,6 +620,44 @@ where
         Ok(())
     }
 
+    pub async fn update_table(
+        &mut self,
+        target_ref: &Arc<BaseCategory::Object>,
+        morphisms: HashSet<Arc<<BaseCategory::Object as CategoryTrait>::Morphism>>,
+    ) -> Result<Arc<BaseCategory::Object>, CalfErrors>{
+        let mut objects = vec![];
+        for morphism in morphisms {
+            let new_object = morphism.source_object().clone();
+            objects.push(new_object);
+        }
+
+        let inclusion_functor = inclusion_functor(
+            target_ref.clone(), objects).await?;
+
+        let new_data = inclusion_functor.target_object();
+        self.category.add_object(new_data.clone()).await?;
+
+        let morphism = Arc::new(Morphism::new(
+            String::generate(),
+            target_ref.clone(),
+            new_data.clone(),
+            Some(inclusion_functor.clone())
+        ));
+
+        self.category.add_morphism(morphism).await?;
+
+        Ok(new_data.clone())
+    }
+
+
+    pub async fn export_cytoscape(&self, file_path: &str) -> Result<(), CalfErrors> {
+        Ok(save_category_to_cytoscape_json_file(
+            self.category.inner_category(),
+            true,
+            10,
+            file_path.to_string(),
+        ).await?)
+    }
 }
 
 

@@ -13,10 +13,10 @@ use category_theory::core::traits::category_trait::{CategoryTrait, CategoryFromO
 
 #[tokio::main]
 async fn main() {
-    category_theory::init_db().await.unwrap();
-    run::<PersistableCategory<DynamicCategory>>().await;
+    category_theory::init_db(Some("calf")).await.unwrap();
+    // run::<PersistableCategory<DynamicCategory>>().await;
     // run::<DiscreteCategory>().await;
-    // run::<DynamicCategory>().await;
+    run::<DiscreteCategory>().await;
 }
 
 
@@ -33,5 +33,8 @@ where
     let mut calf: CALF<RegexOracle, BaseCategory<Category>> = CALF::new(allowed_alphabets.into(), regex_oracle).await;
 
     calf.run().await.unwrap();
+
+    calf.export_cytoscape("/Users/mwas/projects/CALFrs/main_regex_oracle.json").await.unwrap();
+
     println!("done running regex oracle with CALF");
 }
