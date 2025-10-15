@@ -14,9 +14,9 @@ use category_theory::core::traits::category_trait::{CategoryTrait, CategoryFromO
 #[tokio::main]
 async fn main() {
     category_theory::init_db(Some("calf")).await.unwrap();
-    // run::<PersistableCategory<DynamicCategory>>().await;
+    run::<PersistableCategory<DynamicCategory>>().await;
     // run::<DiscreteCategory>().await;
-    run::<DiscreteCategory>().await;
+    // run::<DiscreteCategory>().await;
 }
 
 

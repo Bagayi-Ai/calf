@@ -459,26 +459,23 @@ where
     }
 
     async fn create_prefix_alphabet(&mut self) -> Result<(), CalfErrors> {
-        let powerset_morphism = self.get_or_create_prefix_to_powerset_morphism().await?.clone();
+        let prefix_to_powerset_morphism=
+            self.get_or_create_prefix_to_powerset_morphism().await?.clone();
         let morphism_factors =
-            self.category.morphism_factors(&*powerset_morphism)?;
+            self.category.morphism_factors(&*prefix_to_powerset_morphism)?;
+        // epic morphism from S (prefix) to H (hypothesis)
         let epic_morphism = morphism_factors.0.clone();
 
-        let product_mappings = apply_product(
+        let (product_object, product_mapping) = apply_product(
             &mut self.category,
             &self.prefix,
             self.alphabets.clone()).await.expect("Failed to apply");
 
-        let prefix_identity_morphism = self.category.get_identity_morphism(&*self.prefix).await?;
-        if let Some(prefix_alphabet_identity_morphism) = product_mappings.get(prefix_identity_morphism) {
-            self.prefix_alphabet = prefix_alphabet_identity_morphism.source_object().clone();
-        } else {
-            return Err(CalfErrors::UnknownError);
-        }
+        self.prefix_alphabet = product_object;
 
         // now create hypothesis prefix alphabet
-        if let Some(hypothesis_prefix_alphabet_identity_morphism) = product_mappings.get(&epic_morphism) {
-            self.hypothesis_prefix_alphabet = hypothesis_prefix_alphabet_identity_morphism.source_object().clone();
+        if let Some(hypothesis_prefix_alphabet_identity_morphism) = product_mapping.get(&epic_morphism) {
+            self.hypothesis_prefix_alphabet = hypothesis_prefix_alphabet_identity_morphism.target_object().clone();
         } else {
             return Err(CalfErrors::UnknownError);
         }
