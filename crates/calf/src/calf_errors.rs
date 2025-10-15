@@ -14,7 +14,9 @@ pub enum CalfErrors {
     InvalidMappingFromFHtoPowerset,
     InvalidMappingFromHtoPowerset,
     MultipleMorphismsFromFStoH,
-    MultipleMorphismsFromFHtoH
+    MultipleMorphismsFromFHtoH,
+    ErrorAddingPowersetMorphism,
+    CategoryExportError(String),
 }
 
 impl From<Errors> for CalfErrors {
