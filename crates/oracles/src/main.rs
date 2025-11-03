@@ -34,7 +34,7 @@ where
 
     calf.run().await.unwrap();
 
-    calf.export_cytoscape("/Users/mwas/projects/CALFrs/main_regex_oracle.json").await.unwrap();
+    calf.export_cytoscape("/Users/mwas/projects/CALFrs/viz/data.json").await.unwrap();
 
     println!("done running regex oracle with CALF");
 }
